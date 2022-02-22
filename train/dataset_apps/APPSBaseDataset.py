@@ -4,6 +4,14 @@ Dataset to be used for APPS Training
 formats:
     call-based
     standard
+
+TODO for converting to mercury
+    - token limit:
+        - throw away examples with long q_str
+        - throw away examples with long combined q_str + a_str
+    - avoid the in-context learning jazz
+    - data loading is complicated!
+        - need to generate paths after unzipping the folder!
 """
 
 import gc
