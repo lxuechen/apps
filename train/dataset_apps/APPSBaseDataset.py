@@ -100,7 +100,7 @@ class APPSBaseDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.samples)
 
-    def pack_samples(self, idx):
+    def pack_samples(self, idx: int) -> list:
         """Repeatedly pick question, answer pairs from self.data_root until we hit max_tokens.
         This will not include the tokens for the QUESTION and ANSWER prompt, as well as the  
         self.question_prefix. These will be added later and the total input will be 
@@ -151,54 +151,41 @@ class APPSBaseDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         raw_samples = self.pack_samples(idx)
-
         if 'gpt' in self.mode:
-            retval = sample_gpt_task(raw_samples, max_tokens=self.max_tokens, tokenizer=self.tokenizer)
-        elif self.mode in {'codebert'}:
-            retval = sample_gpt_task(raw_samples, max_tokens=self.max_tokens, tokenizer=self.tokenizer)
+            retval = self.sample_gpt_task(raw_samples)
         else:
             raise NotImplementedError()
 
         gc.collect()
         return retval
 
+    def sample_gpt_task(self, raw_samples):
+        """Create the true sample used for the GPT task."""
+        input_ids = []
+        label_ids = []
 
-def sample_gpt_task(raw_samples, max_tokens, tokenizer):
-    """Create the true sample used for the GPT task."""
+        for q_str, s_str, a_str, answer_type in raw_samples:
+            # Loss is not calculated on this
+            q_str = "\nQUESTION:\n" + q_str + "\n" + s_str + "\n" + answer_type + "\nANSWER:\n"
 
-    input_ids = []
-    label_ids = []
+            question_token_ids = self.tokenizer.encode(q_str, verbose=False)
+            answer_token_ids = self.tokenizer.encode(a_str, verbose=False)
+            answer_token_ids.append(self.tokenizer.eos_token_id)
 
-    for q_str, s_str, a_str, answer_type in raw_samples:
-        # Loss is not calculated on this
-        q_str = "\nQUESTION:\n" + q_str + "\n" + s_str + "\n" + answer_type + "\nANSWER:\n"
+            input_ids.extend(question_token_ids)
+            input_ids.extend(answer_token_ids)
 
-        question_token_ids = tokenizer.encode(q_str, verbose=False)
-        answer_token_ids = tokenizer.encode(a_str, verbose=False)
-        answer_token_ids.append(tokenizer.eos_token_id)
+            label_ids.extend([-100] * len(question_token_ids))
+            label_ids.extend(answer_token_ids)
 
-        input_ids.extend(question_token_ids)
-        input_ids.extend(answer_token_ids)
+        # Cut off the excess; ad-hoc but from the original codebase!
+        input_ids = input_ids[:self.max_tokens]
+        label_ids = label_ids[:self.max_tokens]
 
-        label_ids.extend([-100] * len(question_token_ids))
-        label_ids.extend(answer_token_ids)
-
-    # Sanity check
-    assert len(input_ids) == len(label_ids)
-
-    if len(input_ids) < max_tokens:
-        print(len(input_ids))
-        import pdb;
-        pdb.set_trace()
-
-    # Cut off the excess
-    input_ids = input_ids[:max_tokens]
-    label_ids = label_ids[:max_tokens]
-
-    return {
-        "input_ids": torch.LongTensor(input_ids),
-        "labels": torch.LongTensor(label_ids)
-    }
+        return {
+            "input_ids": torch.LongTensor(input_ids),
+            "labels": torch.LongTensor(label_ids),
+        }
 
 
 def reindent_code(codestr):
@@ -252,6 +239,10 @@ if __name__ == '__main__':
         if i >= print_limit:
             break
 
+        print(e.keys())
+        import pdb;
+
+        pdb.set_trace()
         print("------- input_ids ------------------------------------------------------------------------------------")
         print(tokenizer.decode(e['input_ids']))
         print("------- labels ------------------------------------------------------------------------------------")
