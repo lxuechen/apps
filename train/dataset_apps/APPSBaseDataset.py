@@ -1,19 +1,18 @@
 """
 Dataset to be used for APPS Training
+
+formats:
+    call-based
+    standard
 """
 
-from dataset_lm.reindent import run as run_reindent
-import dataset_lm.util as dsutil
-import fnmatch
 import gc
-import glob
 import io
-import json
 import logging
-from multiprocessing import Manager
-import numpy as np
 import os
 import random
+
+from dataset_lm.reindent import run as run_reindent
 import torch
 from tqdm import tqdm
 import transformers
@@ -28,10 +27,11 @@ class APPSBaseDataset(torch.utils.data.Dataset):
         self.sample_mode = sample_mode  # Either "uniform_sol" or "uniform_prob"
         self.max_tokens = max_tokens
 
-        self.samples = []  # Should be set in initialize()
+        self.samples = None  # Set in `initialize`.
+        self.samples_dict = None  # Set in `initialize`. Maps problem fname to example. Multi-solution for one problem.
         self.initialize()
 
-        if ('EleutherAI' in mode or '2700' in mode):
+        if 'EleutherAI' in mode or '2700' in mode:
             self.tokenizer = transformers.GPT2Tokenizer.from_pretrained("EleutherAI/gpt-neo-2.7B")
         elif 'gpt' in self.mode:  # Should handle GPT-2 and GPT-Neo
             self.tokenizer = transformers.GPT2Tokenizer.from_pretrained(mode)
@@ -41,10 +41,7 @@ class APPSBaseDataset(torch.utils.data.Dataset):
             raise NotImplementedError()
 
     def initialize(self):
-        """
-        Assume self.dataroot is set to folderName/data
-        """
-
+        """Populate `self.samples` and `self.samples_dict`."""
         all_samples = []
         skipped_problems = []
 
@@ -65,31 +62,32 @@ class APPSBaseDataset(torch.utils.data.Dataset):
                 skipped_problems.append(problem_name)
                 continue
 
-            if (os.path.isfile(starter_code)):
+            # Load starter code if there's any.
+            if os.path.isfile(starter_code):
                 with open(starter_code, 'r') as f:
                     starter_code = f.read()
             else:
                 starter_code = ""
 
-            # Read the question description
+            # Read the question description.
             with open(question_fname, 'r') as f:
                 question_str = f.read()
 
-            # Read all the solutions
+            # Read all the solutions.
             with open(sols_fname, 'r') as f:
                 sols_str_list = json.load(f)
                 for sol_str in sols_str_list:
                     sol_str = reindent_code(sol_str)
                     sample = (question_str, starter_code, sol_str, answer_type)
-
                     all_samples.append(sample)
                     if question_str in all_samples_dict:
                         all_samples_dict[question_str].append(sample)
                     else:
                         all_samples_dict[question_str] = [sample]
 
-        print(f"Loaded {len(all_samples)} saamples from {self.dataroot}.")
-        print(f"Skipped {len(skipped_problems)} problems from {self.dataroot}.")
+        logging.warning(f"Loaded {len(all_samples)} samples from {self.dataroot}.")
+        logging.warning(f"Skipped {len(skipped_problems)} problems from {self.dataroot}.")
+
         self.samples = all_samples
         self.samples_dict = all_samples_dict
 
@@ -145,21 +143,12 @@ class APPSBaseDataset(torch.utils.data.Dataset):
         return curr_samples
 
     def __getitem__(self, idx):
-
         raw_samples = self.pack_samples(idx)
 
         if 'gpt' in self.mode:
-            retval = sample_gpt_task(
-                raw_samples,
-                max_tokens=self.max_tokens,
-                tokenizer=self.tokenizer,
-            )
+            retval = sample_gpt_task(raw_samples, max_tokens=self.max_tokens, tokenizer=self.tokenizer)
         elif self.mode in {'codebert'}:
-            retval = sample_gpt_task(
-                raw_samples,
-                max_tokens=self.max_tokens,
-                tokenizer=self.tokenizer,
-            )
+            retval = sample_gpt_task(raw_samples, max_tokens=self.max_tokens, tokenizer=self.tokenizer)
         else:
             raise NotImplementedError()
 
@@ -168,9 +157,7 @@ class APPSBaseDataset(torch.utils.data.Dataset):
 
 
 def sample_gpt_task(raw_samples, max_tokens, tokenizer):
-    """
-    Create the true sample used for the GPT task
-    """
+    """Create the true sample used for the GPT task."""
 
     input_ids = []
     label_ids = []
