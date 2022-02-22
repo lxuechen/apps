@@ -237,8 +237,7 @@ def reindent_code(codestr):
 if __name__ == '__main__':
     import json
 
-    # TODO: Change to folder where your files reside.
-    dataroot = "~/data/apps"
+    dataroot = os.path.join(os.path.expanduser('~'), "data/apps")
 
     # --- lxuechen ---
     with open(os.path.join(dataroot, "data_split/train.json")) as f:
