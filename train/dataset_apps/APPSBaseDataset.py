@@ -2,49 +2,43 @@
 Dataset to be used for APPS Training
 """
 
-import torch
-import glob
-import logging
-import random
-import fnmatch
-
-from multiprocessing import Manager
-# from multiprocessing.shared_memory import ShareableList
-
+from dataset_lm.reindent import run as run_reindent
 import dataset_lm.util as dsutil
-import numpy as np
+import fnmatch
 import gc
-import os
+import glob
 import io
-
+import json
+import logging
+from multiprocessing import Manager
+import numpy as np
+import os
+import random
+import torch
+from tqdm import tqdm
 import transformers
 
-from dataset_lm.reindent import run as run_reindent
-from tqdm import tqdm 
-
-import json
 
 class APPSBaseDataset(torch.utils.data.Dataset):
     def __init__(self, dataroot, problem_dirs, mode, max_tokens, sample_mode):
         self.dataroot = dataroot
-        self.problem_dirs = problem_dirs # Loaded from train/test split json files
+        self.problem_dirs = problem_dirs  # Loaded from train/test split json files
 
         self.mode = mode
-        self.sample_mode = sample_mode # Either "uniform_sol" or "uniform_prob"
+        self.sample_mode = sample_mode  # Either "uniform_sol" or "uniform_prob"
         self.max_tokens = max_tokens
 
-        self.samples = []           # Should be set in initialize()
+        self.samples = []  # Should be set in initialize()
         self.initialize()
 
         if ('EleutherAI' in mode or '2700' in mode):
             self.tokenizer = transformers.GPT2Tokenizer.from_pretrained("EleutherAI/gpt-neo-2.7B")
-        elif 'gpt' in self.mode: # Should handle GPT-2 and GPT-Neo
+        elif 'gpt' in self.mode:  # Should handle GPT-2 and GPT-Neo
             self.tokenizer = transformers.GPT2Tokenizer.from_pretrained(mode)
         elif self.mode in {'codebert'}:
             self.tokenizer = transformers.RobertaTokenizer.from_pretrained("microsoft/codebert-base")
         else:
             raise NotImplementedError()
-
 
     def initialize(self):
         """
@@ -54,15 +48,13 @@ class APPSBaseDataset(torch.utils.data.Dataset):
         all_samples = []
         skipped_problems = []
 
-        all_samples_dict = {} # Mapping from question_fname to list of samples
+        all_samples_dict = {}  # Mapping from question_fname to list of samples
 
         print(f"Loading {len(self.problem_dirs)} problems from {self.dataroot}.")
         for problem_name in tqdm(self.problem_dirs):
             question_fname = os.path.join(self.dataroot, problem_name, "question.txt")
             sols_fname = os.path.join(self.dataroot, problem_name, "solutions.json")
             starter_code = os.path.join(self.dataroot, problem_name, "starter_code.py")
-
-            # print(question_fname)
 
             if os.path.exists(starter_code):
                 answer_type = "\nUse Call-Based format\n"
@@ -89,22 +81,20 @@ class APPSBaseDataset(torch.utils.data.Dataset):
                 for sol_str in sols_str_list:
                     sol_str = reindent_code(sol_str)
                     sample = (question_str, starter_code, sol_str, answer_type)
-                    
+
                     all_samples.append(sample)
                     if question_str in all_samples_dict:
                         all_samples_dict[question_str].append(sample)
                     else:
                         all_samples_dict[question_str] = [sample]
-        
+
         print(f"Loaded {len(all_samples)} saamples from {self.dataroot}.")
         print(f"Skipped {len(skipped_problems)} problems from {self.dataroot}.")
         self.samples = all_samples
         self.samples_dict = all_samples_dict
 
-
     def __len__(self):
         return len(self.samples)
-
 
     def pack_samples(self, idx):
         """
@@ -116,7 +106,7 @@ class APPSBaseDataset(torch.utils.data.Dataset):
         Always include the sample at idx at the beginning.
         """
         curr_num_tokens = 0
-        curr_samples = [] 
+        curr_samples = []
 
         if self.sample_mode == 'uniform_sol':
             curr_q, curr_s, curr_a, curr_q_prefix = self.samples[idx]
@@ -155,26 +145,27 @@ class APPSBaseDataset(torch.utils.data.Dataset):
         return curr_samples
 
     def __getitem__(self, idx):
-        
+
         raw_samples = self.pack_samples(idx)
 
         if 'gpt' in self.mode:
             retval = sample_gpt_task(
                 raw_samples,
-                max_tokens=self.max_tokens, 
-                tokenizer=self.tokenizer, 
+                max_tokens=self.max_tokens,
+                tokenizer=self.tokenizer,
             )
         elif self.mode in {'codebert'}:
             retval = sample_gpt_task(
                 raw_samples,
-                max_tokens=self.max_tokens, 
-                tokenizer=self.tokenizer, 
+                max_tokens=self.max_tokens,
+                tokenizer=self.tokenizer,
             )
         else:
             raise NotImplementedError()
-    
+
         gc.collect()
         return retval
+
 
 def sample_gpt_task(raw_samples, max_tokens, tokenizer):
     """
@@ -183,36 +174,36 @@ def sample_gpt_task(raw_samples, max_tokens, tokenizer):
 
     input_ids = []
     label_ids = []
-    
+
     for q_str, s_str, a_str, answer_type in raw_samples:
-        
         # Loss is not calculated on this
-        q_str =  "\nQUESTION:\n" + q_str + "\n" + s_str + "\n" + answer_type + "\nANSWER:\n"
+        q_str = "\nQUESTION:\n" + q_str + "\n" + s_str + "\n" + answer_type + "\nANSWER:\n"
 
         question_token_ids = tokenizer.encode(q_str, verbose=False)
-        answer_token_ids   = tokenizer.encode(a_str, verbose=False)
+        answer_token_ids = tokenizer.encode(a_str, verbose=False)
         answer_token_ids.append(tokenizer.eos_token_id)
 
         input_ids.extend(question_token_ids)
         input_ids.extend(answer_token_ids)
-        
+
         label_ids.extend([-100] * len(question_token_ids))
         label_ids.extend(answer_token_ids)
-    
+
     # Sanity check
     assert len(input_ids) == len(label_ids)
 
     if len(input_ids) < max_tokens:
         print(len(input_ids))
-        import pdb; pdb.set_trace()
+        import pdb;
+        pdb.set_trace()
 
     # Cut off the excess
     input_ids = input_ids[:max_tokens]
     label_ids = label_ids[:max_tokens]
 
     return {
-        "input_ids" : torch.LongTensor(input_ids),
-        "labels" :  torch.LongTensor(label_ids)
+        "input_ids": torch.LongTensor(input_ids),
+        "labels": torch.LongTensor(label_ids)
     }
 
 
@@ -225,9 +216,9 @@ def reindent_code(codestr):
     ret = io.StringIO()
 
     run_reindent(
-        codestr, 
-        ret, 
-        config = {
+        codestr,
+        ret,
+        config={
             "dry-run": False,
             "help": False,
             "to": 4,
@@ -246,16 +237,21 @@ def reindent_code(codestr):
 if __name__ == '__main__':
     import json
 
-    # Do sanity checking
-    with open("~/apps/data_split/train.json") as f:
+    # TODO: Change to folder where your files reside.
+    dataroot = "~/data/apps"
+
+    # --- lxuechen ---
+    with open(os.path.join(dataroot, "data_split/train.json")) as f:
         fnames = json.load(f)
-    
+    # ---
+
     tokenizer = transformers.GPT2Tokenizer.from_pretrained('gpt2')
     dataset = APPSBaseDataset(
-        dataroot='~/apps/', 
+        dataroot=dataroot,
         problem_dirs=fnames,
-        mode='gpt2', 
-        max_tokens=1024
+        mode='gpt2',
+        max_tokens=1024,
+        sample_mode="uniform_sol"
     )
 
     e = dataset[0]
@@ -268,4 +264,6 @@ if __name__ == '__main__':
     labels_str = tokenizer.decode(labels)
     print(labels_str)
 
-    import pdb; pdb.set_trace()
+    import pdb;
+
+    pdb.set_trace()
