@@ -19,8 +19,14 @@ import transformers
 
 
 class APPSBaseDataset(torch.utils.data.Dataset):
-    def __init__(self, dataroot, problem_dirs, mode, max_tokens, sample_mode):
-        self.dataroot = dataroot
+    def __init__(self, data_root, problem_dirs, mode, max_tokens, sample_mode):
+        """
+
+        Args:
+            sample_mode: `uniform_prob` samples over problem. `uniform_sol` samples over problem-solution pair..
+                `uniform_sol` isn't actually sampling; just plain sequential processing!
+        """
+        self.data_root = data_root
         self.problem_dirs = problem_dirs  # Loaded from train/test split json files
 
         self.mode = mode
@@ -47,11 +53,11 @@ class APPSBaseDataset(torch.utils.data.Dataset):
 
         all_samples_dict = {}  # Mapping from question_fname to list of samples
 
-        print(f"Loading {len(self.problem_dirs)} problems from {self.dataroot}.")
+        print(f"Loading {len(self.problem_dirs)} problems from {self.data_root}.")
         for problem_name in tqdm(self.problem_dirs):
-            question_fname = os.path.join(self.dataroot, problem_name, "question.txt")
-            sols_fname = os.path.join(self.dataroot, problem_name, "solutions.json")
-            starter_code = os.path.join(self.dataroot, problem_name, "starter_code.py")
+            question_fname = os.path.join(self.data_root, problem_name, "question.txt")
+            sols_fname = os.path.join(self.data_root, problem_name, "solutions.json")
+            starter_code = os.path.join(self.data_root, problem_name, "starter_code.py")
 
             if os.path.exists(starter_code):
                 answer_type = "\nUse Call-Based format\n"
@@ -85,8 +91,8 @@ class APPSBaseDataset(torch.utils.data.Dataset):
                     else:
                         all_samples_dict[question_str] = [sample]
 
-        logging.warning(f"Loaded {len(all_samples)} samples from {self.dataroot}.")
-        logging.warning(f"Skipped {len(skipped_problems)} problems from {self.dataroot}.")
+        logging.warning(f"Loaded {len(all_samples)} samples from {self.data_root}.")
+        logging.warning(f"Skipped {len(skipped_problems)} problems from {self.data_root}.")
 
         self.samples = all_samples
         self.samples_dict = all_samples_dict
@@ -95,14 +101,15 @@ class APPSBaseDataset(torch.utils.data.Dataset):
         return len(self.samples)
 
     def pack_samples(self, idx):
-        """
-        Repeatedly pick question, answer pairs from self.dataroot until we hit max_tokens.
+        """Repeatedly pick question, answer pairs from self.data_root until we hit max_tokens.
         This will not include the tokens for the QUESTION and ANSWER prompt, as well as the  
         self.question_prefix. These will be added later and the total input will be 
         truncated if necessary.
 
         Always include the sample at idx at the beginning.
         """
+        SINGLE_STR_LIMIT = 150000  # Ad-hoc constant from original codebase.
+
         curr_num_tokens = 0
         curr_samples = []
 
@@ -115,11 +122,10 @@ class APPSBaseDataset(torch.utils.data.Dataset):
             raise NotImplementedError()
 
         while curr_num_tokens < self.max_tokens:
-
             # Never remove. Fixes stalling bug.
-            curr_q = curr_q[:150000]
-            curr_s = curr_s[:150000]
-            curr_a = curr_a[:150000]
+            curr_q = curr_q[:SINGLE_STR_LIMIT]
+            curr_s = curr_s[:SINGLE_STR_LIMIT]
+            curr_a = curr_a[:SINGLE_STR_LIMIT]
 
             if self.mode in {'codebert'}:
                 curr_q = curr_q.replace('\t', '\0')
@@ -132,6 +138,7 @@ class APPSBaseDataset(torch.utils.data.Dataset):
 
             curr_samples.append((curr_q, curr_s, curr_a, curr_q_prefix))
 
+            # Prepare for next round, if you can't reach the budget!
             if self.sample_mode == 'uniform_sol':
                 curr_q, curr_s, curr_a, curr_q_prefix = random.choice(self.samples)
             elif self.sample_mode == 'uniform_prob':
@@ -224,32 +231,31 @@ def reindent_code(codestr):
 if __name__ == '__main__':
     import json
 
-    dataroot = os.path.join(os.path.expanduser('~'), "data/apps")
+    data_root = os.path.join(os.path.expanduser('~'), "data/apps")
 
     # --- lxuechen ---
-    with open(os.path.join(dataroot, "data_split/train.json")) as f:
+    with open(os.path.join(data_root, "data_split/train.json")) as f:
         fnames = json.load(f)
     # ---
 
     tokenizer = transformers.GPT2Tokenizer.from_pretrained('gpt2')
     dataset = APPSBaseDataset(
-        dataroot=dataroot,
+        data_root=data_root,
         problem_dirs=fnames,
         mode='gpt2',
         max_tokens=1024,
         sample_mode="uniform_sol"
     )
 
-    e = dataset[0]
-    print(e)
-    print("------- input_ids ------------------------------------------------------------------------------------")
-    print(tokenizer.decode(e['input_ids']))
-    print("------- labels ------------------------------------------------------------------------------------")
-    labels = e['labels']
-    labels[labels == -100] = tokenizer.eos_token_id
-    labels_str = tokenizer.decode(labels)
-    print(labels_str)
+    print_limit = 10
+    for i, e in enumerate(dataset):
+        if i >= print_limit:
+            break
 
-    import pdb;
-
-    pdb.set_trace()
+        print("------- input_ids ------------------------------------------------------------------------------------")
+        print(tokenizer.decode(e['input_ids']))
+        print("------- labels ------------------------------------------------------------------------------------")
+        labels = e['labels']
+        labels[labels == -100] = tokenizer.eos_token_id
+        labels_str = tokenizer.decode(labels)
+        print(labels_str)
