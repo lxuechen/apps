@@ -12,6 +12,7 @@ TODO for converting to mercury
     - avoid the in-context learning jazz
     - data loading is complicated!
         - need to generate paths after unzipping the folder!
+    - check evaluation
 """
 
 import gc
